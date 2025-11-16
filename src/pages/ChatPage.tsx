@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect } from "react";
 import { InferenceClient } from "@huggingface/inference";
 import ReactMarkdown from "react-markdown";
+import { RiAiGenerate2 } from "react-icons/ri";
 
 interface Message {
   id: number;
   text: string;
   isUser: boolean;
   timestamp: Date;
+  imageUrl?: string; // New field for image URLs
 }
 
 interface ChatPageProps {
@@ -49,11 +51,14 @@ const ChatPage: React.FC<ChatPageProps> = ({
     )
       return;
 
-    // Check if only text-generation models are supported
-    if (selectedPipeline !== "text-generation") {
+    // Check if only text-generation and text-to-image models are supported
+    if (
+      selectedPipeline !== "text-generation" &&
+      selectedPipeline !== "text-to-image"
+    ) {
       const errorMessage: Message = {
         id: messages.length + 2,
-        text: "Currently only text generation models are working. We will add support for other pipelines in upcoming versions.",
+        text: "Currently only text generation and text-to-image models are working. We will add support for other pipelines in upcoming versions.",
         isUser: false,
         timestamp: new Date(),
       };
@@ -75,30 +80,58 @@ const ChatPage: React.FC<ChatPageProps> = ({
     setIsLoading(true);
 
     try {
-      // Initialize the bot message with empty text
-      const botMessageId = messages.length + 2;
-      const botMessage: Message = {
-        id: botMessageId,
-        text: "",
+      if (selectedPipeline === "text-generation") {
+        await handleTextGeneration(inputMessage);
+      } else if (selectedPipeline === "text-to-image") {
+        await handleImageGeneration(inputMessage);
+      }
+    } catch (error) {
+      console.error("Error processing request:", error);
+
+      // Update with error message
+      const errorMessage: Message = {
+        id: messages.length + 2,
+        text: "Sorry, I encountered an error while processing your request. Please try again.",
         isUser: false,
         timestamp: new Date(),
       };
 
-      setMessages((prev) => [...prev, botMessage]);
+      setMessages((prev) => {
+        // Remove any loading message and add error message
+        const filtered = prev.filter((msg) => msg.id !== messages.length + 2);
+        return [...filtered, errorMessage];
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
+  const handleTextGeneration = async (userInput: string) => {
+    // Initialize the bot message with empty text
+    const botMessageId = messages.length + 2;
+    const botMessage: Message = {
+      id: botMessageId,
+      text: "",
+      isUser: false,
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [...prev, botMessage]);
+
+    try {
       // Create InferenceClient with user's API key
       const client = new InferenceClient(api_key);
 
       const stream = client.chatCompletionStream({
-        model: selectedModel,
+        model: selectedModel as string,
         messages: [
           ...messages.map((msg) => ({
             role: msg.isUser ? ("user" as const) : ("assistant" as const),
             content: msg.text,
           })),
           {
-            role: "user",
-            content: inputMessage,
+            role: "user" as const,
+            content: userInput,
           },
         ],
       });
@@ -107,7 +140,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
 
       for await (const chunk of stream) {
         if (chunk.choices && chunk.choices.length > 0) {
-          const newContent = chunk.choices[0].delta.content || "";
+          const newContent = chunk.choices[0]?.delta?.content || "";
           fullResponse += newContent;
 
           // Update the bot message with streaming content
@@ -118,24 +151,121 @@ const ChatPage: React.FC<ChatPageProps> = ({
           );
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Error streaming response:", error);
 
+      let errorMessage =
+        "Sorry, I encountered an error while processing your request. Please try again.";
+
+      // Check if it's a credit limit error - handle both Error and ProviderApiError
+      const errorMessageString =
+        error instanceof Error
+          ? error.message
+          : typeof error === "object" && error !== null && "message" in error
+          ? String(error.message)
+          : String(error);
+
+      if (
+        errorMessageString.includes("exceeded your monthly included credits") ||
+        errorMessageString.includes("Subscribe to PRO")
+      ) {
+        errorMessage =
+          "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
+      }
+
       // Update the bot message with error
-      const errorMessage: Message = {
-        id: messages.length + 2,
-        text: "Sorry, I encountered an error while processing your request. Please try again.",
+      const errorMessageObj: Message = {
+        id: botMessageId,
+        text: errorMessage,
         isUser: false,
         timestamp: new Date(),
       };
 
       setMessages((prev) => {
         // Remove the loading message and add error message
-        const filtered = prev.filter((msg) => msg.id !== messages.length + 2);
-        return [...filtered, errorMessage];
+        const filtered = prev.filter((msg) => msg.id !== botMessageId);
+        return [...filtered, errorMessageObj];
       });
-    } finally {
-      setIsLoading(false);
+    }
+  };
+
+  const handleImageGeneration = async (prompt: string) => {
+    // Create a loading message for image generation
+    const loadingMessage: Message = {
+      id: messages.length + 2,
+      text: `Generating image for: "${prompt}"...`,
+      isUser: false,
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [...prev, loadingMessage]);
+
+    try {
+      // Create InferenceClient with user's API key
+      const client = new InferenceClient(api_key);
+
+      // Generate image using text-to-image with blob output
+      const imageBlob = await client.textToImage(
+        {
+          model: selectedModel as string,
+          inputs: prompt,
+          parameters: {
+            num_inference_steps: 20,
+          },
+        },
+        {
+          outputType: "blob" as const,
+        }
+      );
+
+      // Convert blob to data URL
+      const imageUrl = URL.createObjectURL(imageBlob);
+
+      // Replace the loading message with the actual image
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === loadingMessage.id
+            ? {
+                ...msg,
+                text: `Generated image for: "${prompt}"`,
+                imageUrl: imageUrl,
+              }
+            : msg
+        )
+      );
+    } catch (error: unknown) {
+      console.error("Error generating image:", error);
+
+      let errorMessage =
+        "Sorry, I encountered an error while generating the image. Please try again.";
+
+      // Check if it's a credit limit error - handle both Error and ProviderApiError
+      const errorMessageString =
+        error instanceof Error
+          ? error.message
+          : typeof error === "object" && error !== null && "message" in error
+          ? String(error.message)
+          : String(error);
+
+      if (
+        errorMessageString.includes("exceeded your monthly included credits") ||
+        errorMessageString.includes("Subscribe to PRO")
+      ) {
+        errorMessage =
+          "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
+      }
+
+      // Update the loading message with error
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === loadingMessage.id
+            ? {
+                ...msg,
+                text: errorMessage,
+              }
+            : msg
+        )
+      );
     }
   };
 
@@ -245,9 +375,31 @@ const ChatPage: React.FC<ChatPageProps> = ({
                 <p className="text-sm whitespace-pre-wrap">{message.text}</p>
               ) : (
                 <div className="text-sm prose prose-invert max-w-none">
-                  <ReactMarkdown components={markdownComponents}>
-                    {message.text}
-                  </ReactMarkdown>
+                  {message.imageUrl ? (
+                    <div className="space-y-2">
+                      <p>{message.text}</p>
+                      <div className="flex justify-center">
+                        <img
+                          src={message.imageUrl}
+                          alt="Generated image"
+                          className="max-w-full h-auto rounded-lg border border-gray-600 max-h-96 object-contain"
+                        />
+                      </div>
+                      <div className="flex justify-center">
+                        <a
+                          href={message.imageUrl}
+                          download={`generated-image-${message.id}.png`}
+                          className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 transition-colors"
+                        >
+                          Download Image
+                        </a>
+                      </div>
+                    </div>
+                  ) : (
+                    <ReactMarkdown components={markdownComponents}>
+                      {message.text}
+                    </ReactMarkdown>
+                  )}
                 </div>
               )}
               <p
@@ -290,7 +442,11 @@ const ChatPage: React.FC<ChatPageProps> = ({
             type="text"
             value={inputMessage}
             onChange={(e) => setInputMessage(e.target.value)}
-            placeholder="Ask First Search AI anything..."
+            placeholder={
+              selectedPipeline === "text-to-image"
+                ? "Describe the image you want to generate..."
+                : "Ask First Search AI anything..."
+            }
             className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white placeholder-gray-400"
             disabled={isLoading || !isVerified || !selectedModel}
           />
@@ -303,9 +459,9 @@ const ChatPage: React.FC<ChatPageProps> = ({
                 inputMessage.trim() === ""
               }
               type="submit"
-              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-800 transition-colors border border-blue-500 disabled:bg-gray-600 disabled:text-gray-400 disabled:border-gray-500 disabled:cursor-not-allowed"
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-800 transition-colors border border-blue-500 disabled:bg-gray-600 disabled:text-gray-400 disabled:border-gray-500 disabled:cursor-not-allowed"
             >
-              {isLoading ? "..." : "Send"}
+              {isLoading ? "..." : <RiAiGenerate2 className="w-5 h-5" />}
             </button>
             {!isVerified && (
               <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-2 py-1 bg-gray-800 text-white text-sm rounded whitespace-nowrap opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity duration-200">
@@ -315,9 +471,17 @@ const ChatPage: React.FC<ChatPageProps> = ({
             )}
           </div>
         </form>
-        {selectedPipeline && selectedPipeline !== "text-generation" && (
-          <p className="text-yellow-500 text-xs mt-2 text-center">
-            Note: Currently only text generation models are fully supported
+        {selectedPipeline &&
+          selectedPipeline !== "text-generation" &&
+          selectedPipeline !== "text-to-image" && (
+            <p className="text-yellow-500 text-xs mt-2 text-center">
+              Note: Currently only text generation and text-to-image models are
+              fully supported
+            </p>
+          )}
+        {selectedPipeline === "text-to-image" && (
+          <p className="text-blue-400 text-xs mt-2 text-center">
+            Enter a description of the image you want to generate
           </p>
         )}
       </div>
