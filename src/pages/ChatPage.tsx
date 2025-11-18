@@ -8,7 +8,13 @@ interface Message {
   text: string;
   isUser: boolean;
   timestamp: Date;
-  imageUrl?: string; // New field for image URLs
+  imageUrl?: string;
+  classificationData?: ClassificationResult[]; // New field for classification results
+}
+
+interface ClassificationResult {
+  label: string;
+  score: number;
 }
 
 interface ChatPageProps {
@@ -51,14 +57,15 @@ const ChatPage: React.FC<ChatPageProps> = ({
     )
       return;
 
-    // Check if only text-generation and text-to-image models are supported
+    // Check if only text-generation, text-to-image, and text-classification models are supported
     if (
       selectedPipeline !== "text-generation" &&
-      selectedPipeline !== "text-to-image"
+      selectedPipeline !== "text-to-image" &&
+      selectedPipeline !== "text-classification"
     ) {
       const errorMessage: Message = {
         id: messages.length + 2,
-        text: "Currently only text generation and text-to-image models are working. We will add support for other pipelines in upcoming versions.",
+        text: "Currently only text generation, text-to-image, and text-classification models are working. We will add support for other pipelines in upcoming versions.",
         isUser: false,
         timestamp: new Date(),
       };
@@ -84,6 +91,8 @@ const ChatPage: React.FC<ChatPageProps> = ({
         await handleTextGeneration(inputMessage);
       } else if (selectedPipeline === "text-to-image") {
         await handleImageGeneration(inputMessage);
+      } else if (selectedPipeline === "text-classification") {
+        await handleTextClassification(inputMessage);
       }
     } catch (error) {
       console.error("Error processing request:", error);
@@ -269,6 +278,111 @@ const ChatPage: React.FC<ChatPageProps> = ({
     }
   };
 
+  const handleTextClassification = async (text: string) => {
+    // Create a loading message for text classification
+    const loadingMessage: Message = {
+      id: messages.length + 2,
+      text: `Analyzing text classification for: "${text}"...`,
+      isUser: false,
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [...prev, loadingMessage]);
+
+    try {
+      // Create InferenceClient with user's API key
+      const client = new InferenceClient(api_key);
+
+      // Perform text classification
+      const classificationResults = await client.textClassification({
+        model: selectedModel as string,
+        inputs: text,
+      });
+
+      // Replace the loading message with the classification results
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === loadingMessage.id
+            ? {
+                ...msg,
+                text: `Text classification results for: "${text}"`,
+                classificationData: classificationResults,
+              }
+            : msg
+        )
+      );
+    } catch (error: unknown) {
+      console.error("Error performing text classification:", error);
+
+      let errorMessage =
+        "Sorry, I encountered an error while analyzing the text. Please try again.";
+
+      // Check if it's a credit limit error - handle both Error and ProviderApiError
+      const errorMessageString =
+        error instanceof Error
+          ? error.message
+          : typeof error === "object" && error !== null && "message" in error
+          ? String(error.message)
+          : String(error);
+
+      if (
+        errorMessageString.includes("exceeded your monthly included credits") ||
+        errorMessageString.includes("Subscribe to PRO")
+      ) {
+        errorMessage =
+          "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
+      }
+
+      // Update the loading message with error
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === loadingMessage.id
+            ? {
+                ...msg,
+                text: errorMessage,
+              }
+            : msg
+        )
+      );
+    }
+  };
+
+  // Component to render classification results as a bar chart
+  const ClassificationChart: React.FC<{ data: ClassificationResult[] }> = ({
+    data,
+  }) => {
+    // Sort data by score in descending order
+    const sortedData = [...data].sort((a, b) => b.score - a.score);
+
+    return (
+      <div className="space-y-3 mt-2">
+        <div className="text-sm font-medium text-gray-300">
+          Classification Results:
+        </div>
+        {sortedData.map((item) => (
+          <div key={item.label} className="space-y-1">
+            <div className="flex justify-between text-xs text-gray-400">
+              <span className="capitalize">{item.label}</span>
+              <span>{(item.score * 100).toFixed(1)}%</span>
+            </div>
+            <div className="w-full bg-gray-700 rounded-full h-2.5">
+              <div
+                className="bg-gradient-to-r from-blue-500 to-purple-600 h-2.5 rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${item.score * 100}%` }}
+              ></div>
+            </div>
+          </div>
+        ))}
+        <div className="text-xs text-gray-500 mt-2">
+          Highest confidence:{" "}
+          <span className="text-green-400 font-medium">
+            {sortedData[0]?.label} ({(sortedData[0]?.score * 100).toFixed(1)}%)
+          </span>
+        </div>
+      </div>
+    );
+  };
+
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
@@ -395,6 +509,11 @@ const ChatPage: React.FC<ChatPageProps> = ({
                         </a>
                       </div>
                     </div>
+                  ) : message.classificationData ? (
+                    <div className="space-y-2">
+                      <p>{message.text}</p>
+                      <ClassificationChart data={message.classificationData} />
+                    </div>
                   ) : (
                     <ReactMarkdown components={markdownComponents}>
                       {message.text}
@@ -445,6 +564,8 @@ const ChatPage: React.FC<ChatPageProps> = ({
             placeholder={
               selectedPipeline === "text-to-image"
                 ? "Describe the image you want to generate..."
+                : selectedPipeline === "text-classification"
+                ? "Enter text to classify..."
                 : "Ask First Search AI anything..."
             }
             className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white placeholder-gray-400"
@@ -473,15 +594,20 @@ const ChatPage: React.FC<ChatPageProps> = ({
         </form>
         {selectedPipeline &&
           selectedPipeline !== "text-generation" &&
-          selectedPipeline !== "text-to-image" && (
+          selectedPipeline !== "text-to-image" &&
+          selectedPipeline !== "text-classification" && (
             <p className="text-yellow-500 text-xs mt-2 text-center">
-              Note: Currently only text generation and text-to-image models are
-              fully supported
+              Note: Currently only text generation, text-to-image, and text-classification models are fully supported
             </p>
           )}
         {selectedPipeline === "text-to-image" && (
           <p className="text-blue-400 text-xs mt-2 text-center">
             Enter a description of the image you want to generate
+          </p>
+        )}
+        {selectedPipeline === "text-classification" && (
+          <p className="text-blue-400 text-xs mt-2 text-center">
+            Enter text to analyze its classification (sentiment, topic, etc.)
           </p>
         )}
       </div>
