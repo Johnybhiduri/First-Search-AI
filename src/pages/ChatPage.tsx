@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { InferenceClient } from "@huggingface/inference";
 import ReactMarkdown from "react-markdown";
 import { RiAiGenerate2 } from "react-icons/ri";
+import { FaGithub, FaLinkedin } from "react-icons/fa";
 
 interface Message {
   id: number;
@@ -9,12 +10,16 @@ interface Message {
   isUser: boolean;
   timestamp: Date;
   imageUrl?: string;
-  classificationData?: ClassificationResult[]; // New field for classification results
+  classificationData?: ClassificationResult[];
 }
 
 interface ClassificationResult {
   label: string;
   score: number;
+}
+
+interface SummarizationResult {
+  summary_text: string;
 }
 
 interface ChatPageProps {
@@ -57,15 +62,16 @@ const ChatPage: React.FC<ChatPageProps> = ({
     )
       return;
 
-    // Check if only text-generation, text-to-image, and text-classification models are supported
+    // Check if supported pipelines
     if (
       selectedPipeline !== "text-generation" &&
       selectedPipeline !== "text-to-image" &&
-      selectedPipeline !== "text-classification"
+      selectedPipeline !== "text-classification" &&
+      selectedPipeline !== "summarization"
     ) {
       const errorMessage: Message = {
         id: messages.length + 2,
-        text: "Currently only text generation, text-to-image, and text-classification models are working. We will add support for other pipelines in upcoming versions.",
+        text: "Currently only text generation, text-to-image, text-classification, and summarization models are working. We will add support for other pipelines in upcoming versions.",
         isUser: false,
         timestamp: new Date(),
       };
@@ -93,11 +99,12 @@ const ChatPage: React.FC<ChatPageProps> = ({
         await handleImageGeneration(inputMessage);
       } else if (selectedPipeline === "text-classification") {
         await handleTextClassification(inputMessage);
+      } else if (selectedPipeline === "summarization") {
+        await handleSummarization(inputMessage);
       }
     } catch (error) {
       console.error("Error processing request:", error);
 
-      // Update with error message
       const errorMessage: Message = {
         id: messages.length + 2,
         text: "Sorry, I encountered an error while processing your request. Please try again.",
@@ -106,7 +113,6 @@ const ChatPage: React.FC<ChatPageProps> = ({
       };
 
       setMessages((prev) => {
-        // Remove any loading message and add error message
         const filtered = prev.filter((msg) => msg.id !== messages.length + 2);
         return [...filtered, errorMessage];
       });
@@ -116,7 +122,6 @@ const ChatPage: React.FC<ChatPageProps> = ({
   };
 
   const handleTextGeneration = async (userInput: string) => {
-    // Initialize the bot message with empty text
     const botMessageId = messages.length + 2;
     const botMessage: Message = {
       id: botMessageId,
@@ -128,9 +133,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
     setMessages((prev) => [...prev, botMessage]);
 
     try {
-      // Create InferenceClient with user's API key
       const client = new InferenceClient(api_key);
-
       const stream = client.chatCompletionStream({
         model: selectedModel as string,
         messages: [
@@ -152,7 +155,6 @@ const ChatPage: React.FC<ChatPageProps> = ({
           const newContent = chunk.choices[0]?.delta?.content || "";
           fullResponse += newContent;
 
-          // Update the bot message with streaming content
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === botMessageId ? { ...msg, text: fullResponse } : msg
@@ -166,23 +168,13 @@ const ChatPage: React.FC<ChatPageProps> = ({
       let errorMessage =
         "Sorry, I encountered an error while processing your request. Please try again.";
 
-      // Check if it's a credit limit error - handle both Error and ProviderApiError
-      const errorMessageString =
-        error instanceof Error
-          ? error.message
-          : typeof error === "object" && error !== null && "message" in error
-          ? String(error.message)
-          : String(error);
+      const errorMessageString = getErrorMessage(error);
 
-      if (
-        errorMessageString.includes("exceeded your monthly included credits") ||
-        errorMessageString.includes("Subscribe to PRO")
-      ) {
+      if (isCreditLimitError(errorMessageString)) {
         errorMessage =
           "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
       }
 
-      // Update the bot message with error
       const errorMessageObj: Message = {
         id: botMessageId,
         text: errorMessage,
@@ -191,7 +183,6 @@ const ChatPage: React.FC<ChatPageProps> = ({
       };
 
       setMessages((prev) => {
-        // Remove the loading message and add error message
         const filtered = prev.filter((msg) => msg.id !== botMessageId);
         return [...filtered, errorMessageObj];
       });
@@ -199,7 +190,6 @@ const ChatPage: React.FC<ChatPageProps> = ({
   };
 
   const handleImageGeneration = async (prompt: string) => {
-    // Create a loading message for image generation
     const loadingMessage: Message = {
       id: messages.length + 2,
       text: `Generating image for: "${prompt}"...`,
@@ -210,10 +200,8 @@ const ChatPage: React.FC<ChatPageProps> = ({
     setMessages((prev) => [...prev, loadingMessage]);
 
     try {
-      // Create InferenceClient with user's API key
       const client = new InferenceClient(api_key);
 
-      // Generate image using text-to-image with blob output
       const imageBlob = await client.textToImage(
         {
           model: selectedModel as string,
@@ -227,10 +215,8 @@ const ChatPage: React.FC<ChatPageProps> = ({
         }
       );
 
-      // Convert blob to data URL
       const imageUrl = URL.createObjectURL(imageBlob);
 
-      // Replace the loading message with the actual image
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === loadingMessage.id
@@ -248,23 +234,13 @@ const ChatPage: React.FC<ChatPageProps> = ({
       let errorMessage =
         "Sorry, I encountered an error while generating the image. Please try again.";
 
-      // Check if it's a credit limit error - handle both Error and ProviderApiError
-      const errorMessageString =
-        error instanceof Error
-          ? error.message
-          : typeof error === "object" && error !== null && "message" in error
-          ? String(error.message)
-          : String(error);
+      const errorMessageString = getErrorMessage(error);
 
-      if (
-        errorMessageString.includes("exceeded your monthly included credits") ||
-        errorMessageString.includes("Subscribe to PRO")
-      ) {
+      if (isCreditLimitError(errorMessageString)) {
         errorMessage =
           "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
       }
 
-      // Update the loading message with error
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === loadingMessage.id
@@ -279,7 +255,6 @@ const ChatPage: React.FC<ChatPageProps> = ({
   };
 
   const handleTextClassification = async (text: string) => {
-    // Create a loading message for text classification
     const loadingMessage: Message = {
       id: messages.length + 2,
       text: `Analyzing text classification for: "${text}"...`,
@@ -290,16 +265,13 @@ const ChatPage: React.FC<ChatPageProps> = ({
     setMessages((prev) => [...prev, loadingMessage]);
 
     try {
-      // Create InferenceClient with user's API key
       const client = new InferenceClient(api_key);
 
-      // Perform text classification
       const classificationResults = await client.textClassification({
         model: selectedModel as string,
         inputs: text,
       });
 
-      // Replace the loading message with the classification results
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === loadingMessage.id
@@ -317,23 +289,13 @@ const ChatPage: React.FC<ChatPageProps> = ({
       let errorMessage =
         "Sorry, I encountered an error while analyzing the text. Please try again.";
 
-      // Check if it's a credit limit error - handle both Error and ProviderApiError
-      const errorMessageString =
-        error instanceof Error
-          ? error.message
-          : typeof error === "object" && error !== null && "message" in error
-          ? String(error.message)
-          : String(error);
+      const errorMessageString = getErrorMessage(error);
 
-      if (
-        errorMessageString.includes("exceeded your monthly included credits") ||
-        errorMessageString.includes("Subscribe to PRO")
-      ) {
+      if (isCreditLimitError(errorMessageString)) {
         errorMessage =
           "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
       }
 
-      // Update the loading message with error
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === loadingMessage.id
@@ -347,11 +309,82 @@ const ChatPage: React.FC<ChatPageProps> = ({
     }
   };
 
+  const handleSummarization = async (text: string) => {
+    const loadingMessage: Message = {
+      id: messages.length + 2,
+      text: `Summarizing text: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"...`,
+      isUser: false,
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [...prev, loadingMessage]);
+
+    try {
+      const client = new InferenceClient(api_key);
+
+      const summarizationResult: SummarizationResult = await client.summarization({
+        model: selectedModel as string,
+        inputs: text,
+      });
+
+      // Replace the loading message with the summarization result
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === loadingMessage.id
+            ? {
+                ...msg,
+                text: `**Summary:**\n\n${summarizationResult.summary_text}\n\n---\n*Original text: "${text.substring(0, 150)}${text.length > 150 ? '...' : ''}"*`,
+              }
+            : msg
+        )
+      );
+    } catch (error: unknown) {
+      console.error("Error performing summarization:", error);
+
+      let errorMessage =
+        "Sorry, I encountered an error while summarizing the text. Please try again.";
+
+      const errorMessageString = getErrorMessage(error);
+
+      if (isCreditLimitError(errorMessageString)) {
+        errorMessage =
+          "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
+      }
+
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === loadingMessage.id
+            ? {
+                ...msg,
+                text: errorMessage,
+              }
+            : msg
+        )
+      );
+    }
+  };
+
+  // Helper function to extract error message
+  const getErrorMessage = (error: unknown): string => {
+    return error instanceof Error
+      ? error.message
+      : typeof error === "object" && error !== null && "message" in error
+      ? String(error.message)
+      : String(error);
+  };
+
+  // Helper function to check for credit limit errors
+  const isCreditLimitError = (errorMessage: string): boolean => {
+    return (
+      errorMessage.includes("exceeded your monthly included credits") ||
+      errorMessage.includes("Subscribe to PRO")
+    );
+  };
+
   // Component to render classification results as a bar chart
   const ClassificationChart: React.FC<{ data: ClassificationResult[] }> = ({
     data,
   }) => {
-    // Sort data by score in descending order
     const sortedData = [...data].sort((a, b) => b.score - a.score);
 
     return (
@@ -367,7 +400,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
             </div>
             <div className="w-full bg-gray-700 rounded-full h-2.5">
               <div
-                className="bg-gradient-to-r from-blue-500 to-purple-600 h-2.5 rounded-full transition-all duration-500 ease-out"
+                className="bg-linear-to-r from-blue-500 to-purple-600 h-2.5 rounded-full transition-all duration-500 ease-out"
                 style={{ width: `${item.score * 100}%` }}
               ></div>
             </div>
@@ -469,7 +502,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
 
   return (
     <div className="flex flex-col h-screen bg-gray-900">
-      {/* Messages Container - Now uses full height */}
+      {/* Messages Container */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.map((message) => (
           <div
@@ -481,7 +514,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
             <div
               className={`max-w-full px-4 py-2 rounded-lg ${
                 message.isUser
-                  ? "bg-blue-600 text-white rounded-br-none border border-blue-500 max-w-2xl"
+                  ? "bg-blue-800 text-white rounded-br-none border border-blue-800 max-w-2xl"
                   : "bg-gray-800 text-gray-100 rounded-bl-none border border-gray-700 w-full"
               }`}
             >
@@ -566,6 +599,8 @@ const ChatPage: React.FC<ChatPageProps> = ({
                 ? "Describe the image you want to generate..."
                 : selectedPipeline === "text-classification"
                 ? "Enter text to classify..."
+                : selectedPipeline === "summarization"
+                ? "Enter text to summarize..."
                 : "Ask First Search AI anything..."
             }
             className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white placeholder-gray-400"
@@ -595,9 +630,10 @@ const ChatPage: React.FC<ChatPageProps> = ({
         {selectedPipeline &&
           selectedPipeline !== "text-generation" &&
           selectedPipeline !== "text-to-image" &&
-          selectedPipeline !== "text-classification" && (
+          selectedPipeline !== "text-classification" &&
+          selectedPipeline !== "summarization" && (
             <p className="text-yellow-500 text-xs mt-2 text-center">
-              Note: Currently only text generation, text-to-image, and text-classification models are fully supported
+              Note: Currently only text generation, text-to-image, text-classification, and summarization models are fully supported
             </p>
           )}
         {selectedPipeline === "text-to-image" && (
@@ -610,10 +646,14 @@ const ChatPage: React.FC<ChatPageProps> = ({
             Enter text to analyze its classification (sentiment, topic, etc.)
           </p>
         )}
+        {selectedPipeline === "summarization" && (
+          <p className="text-blue-400 text-xs mt-2 text-center">
+            Enter text to generate a summary
+          </p>
+        )}
       </div>
-
-      {/* Footer */}
-      <footer className="bg-gray-800 border-t border-gray-700 py-3 px-4">
+          {/* {Footer} */}
+          <footer className="bg-gray-800 border-t border-gray-700 py-3 px-4">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-center sm:justify-between space-y-2 sm:space-y-0">
           <div className="flex items-center space-x-2 text-gray-400 text-sm order-2 sm:order-1">
             <span>Made with ❤️ by Johny Bhiduri</span>
@@ -627,18 +667,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
               className="text-gray-400 hover:text-white transition-colors duration-200"
               aria-label="GitHub Repository"
             >
-              <svg
-                className="w-5 h-5"
-                fill="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
-                  clipRule="evenodd"
-                />
-              </svg>
+              <FaGithub className="w-5 h-5" />
             </a>
 
             <a
@@ -648,14 +677,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
               className="text-gray-400 hover:text-white transition-colors duration-200"
               aria-label="LinkedIn Profile"
             >
-              <svg
-                className="w-5 h-5"
-                fill="currentColor"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
-              </svg>
+              <FaLinkedin className="w-5 h-5" />
             </a>
           </div>
         </div>
@@ -665,3 +687,5 @@ const ChatPage: React.FC<ChatPageProps> = ({
 };
 
 export default ChatPage;
+
+
