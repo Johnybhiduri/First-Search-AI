@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { InferenceClient } from "@huggingface/inference";
 import ReactMarkdown from "react-markdown";
 import { RiAiGenerate2 } from "react-icons/ri";
-import { FaGithub, FaLinkedin } from "react-icons/fa";
+import { FaGithub, FaLinkedin, FaPlus, FaTimes } from "react-icons/fa";
 
 interface Message {
   id: number;
@@ -11,9 +11,15 @@ interface Message {
   timestamp: Date;
   imageUrl?: string;
   classificationData?: ClassificationResult[];
+  imageClassificationData?: ImageClassificationResult[];
 }
 
 interface ClassificationResult {
+  label: string;
+  score: number;
+}
+
+interface ImageClassificationResult {
   label: string;
   score: number;
 }
@@ -45,6 +51,9 @@ const ChatPage: React.FC<ChatPageProps> = ({
   ]);
   const [inputMessage, setInputMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<File | null>(null);
+  const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when messages change
@@ -52,8 +61,35 @@ const ChatPage: React.FC<ChatPageProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Clean up image preview URLs
+  useEffect(() => {
+    return () => {
+      if (imagePreview) {
+        URL.revokeObjectURL(imagePreview);
+      }
+    };
+  }, [imagePreview]);
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // For image classification, require an image instead of text input
+    if (selectedPipeline === "image-classification") {
+      if (!selectedImage) {
+        const errorMessage: Message = {
+          id: messages.length + 1,
+          text: "Please select an image for classification.",
+          isUser: false,
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+        return;
+      }
+      await handleImageClassification(selectedImage);
+      return;
+    }
+
+    // For other pipelines, require text input
     if (
       inputMessage.trim() === "" ||
       !isVerified ||
@@ -67,11 +103,12 @@ const ChatPage: React.FC<ChatPageProps> = ({
       selectedPipeline !== "text-generation" &&
       selectedPipeline !== "text-to-image" &&
       selectedPipeline !== "text-classification" &&
-      selectedPipeline !== "summarization"
+      selectedPipeline !== "summarization" &&
+      selectedPipeline !== "image-classification"
     ) {
       const errorMessage: Message = {
         id: messages.length + 2,
-        text: "Currently only text generation, text-to-image, text-classification, and summarization models are working. We will add support for other pipelines in upcoming versions.",
+        text: "Currently only text generation, text-to-image, text-classification, image-classification, and summarization models are working. We will add support for other pipelines in upcoming versions.",
         isUser: false,
         timestamp: new Date(),
       };
@@ -80,7 +117,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
       return;
     }
 
-    // Add user message
+    // Add user message for text-based pipelines
     const userMessage: Message = {
       id: messages.length + 1,
       text: inputMessage,
@@ -104,22 +141,84 @@ const ChatPage: React.FC<ChatPageProps> = ({
       }
     } catch (error) {
       console.error("Error processing request:", error);
-
-      const errorMessage: Message = {
-        id: messages.length + 2,
-        text: "Sorry, I encountered an error while processing your request. Please try again.",
-        isUser: false,
-        timestamp: new Date(),
-      };
-
-      setMessages((prev) => {
-        const filtered = prev.filter((msg) => msg.id !== messages.length + 2);
-        return [...filtered, errorMessage];
-      });
+      handleError("Sorry, I encountered an error while processing your request. Please try again.");
     } finally {
       setIsLoading(false);
     }
   };
+
+  const handleImageClassification = async (imageFile: File) => {
+  if (!isVerified || !selectedModel) return;
+
+  // Create user message with image preview
+  const userMessage: Message = {
+    id: messages.length + 1,
+    text: "Image uploaded for classification",
+    isUser: true,
+    timestamp: new Date(),
+    imageUrl: imagePreview || undefined,
+  };
+
+  setMessages((prev) => [...prev, userMessage]);
+  setIsLoading(true);
+
+  const loadingMessage: Message = {
+    id: messages.length + 2,
+    text: "Analyzing image...",
+    isUser: false,
+    timestamp: new Date(),
+  };
+
+  setMessages((prev) => [...prev, loadingMessage]);
+
+  try {
+    const client = new InferenceClient(api_key);
+    
+    // Convert File to Blob (the correct type for imageClassification)
+    const imageBlob = new Blob([imageFile], { type: imageFile.type });
+
+    const imageClassificationResults = await client.imageClassification({
+      data: imageBlob,
+      model: selectedModel,
+    });
+
+    // Replace loading message with results
+    setMessages((prev) =>
+      prev.map((msg) =>
+        msg.id === loadingMessage.id
+          ? {
+              ...msg,
+              text: "Image classification completed",
+              imageClassificationData: imageClassificationResults,
+            }
+          : msg
+      )
+    );
+
+    // Clear selected image after successful classification
+    clearSelectedImage();
+
+  } catch (error: unknown) {
+    console.error("Error performing image classification:", error);
+    
+    let errorMessage = "Sorry, I encountered an error while analyzing the image. Please try again.";
+    const errorMessageString = getErrorMessage(error);
+
+    if (isCreditLimitError(errorMessageString)) {
+      errorMessage = "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
+    }
+
+    setMessages((prev) =>
+      prev.map((msg) =>
+        msg.id === loadingMessage.id
+          ? { ...msg, text: errorMessage }
+          : msg
+      )
+    );
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   const handleTextGeneration = async (userInput: string) => {
     const botMessageId = messages.length + 2;
@@ -164,28 +263,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
       }
     } catch (error: unknown) {
       console.error("Error streaming response:", error);
-
-      let errorMessage =
-        "Sorry, I encountered an error while processing your request. Please try again.";
-
-      const errorMessageString = getErrorMessage(error);
-
-      if (isCreditLimitError(errorMessageString)) {
-        errorMessage =
-          "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
-      }
-
-      const errorMessageObj: Message = {
-        id: botMessageId,
-        text: errorMessage,
-        isUser: false,
-        timestamp: new Date(),
-      };
-
-      setMessages((prev) => {
-        const filtered = prev.filter((msg) => msg.id !== botMessageId);
-        return [...filtered, errorMessageObj];
-      });
+      handleStreamingError(error, botMessageId);
     }
   };
 
@@ -230,27 +308,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
       );
     } catch (error: unknown) {
       console.error("Error generating image:", error);
-
-      let errorMessage =
-        "Sorry, I encountered an error while generating the image. Please try again.";
-
-      const errorMessageString = getErrorMessage(error);
-
-      if (isCreditLimitError(errorMessageString)) {
-        errorMessage =
-          "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
-      }
-
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === loadingMessage.id
-            ? {
-                ...msg,
-                text: errorMessage,
-              }
-            : msg
-        )
-      );
+      handlePipelineError(error, loadingMessage.id, "generating the image");
     }
   };
 
@@ -285,27 +343,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
       );
     } catch (error: unknown) {
       console.error("Error performing text classification:", error);
-
-      let errorMessage =
-        "Sorry, I encountered an error while analyzing the text. Please try again.";
-
-      const errorMessageString = getErrorMessage(error);
-
-      if (isCreditLimitError(errorMessageString)) {
-        errorMessage =
-          "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
-      }
-
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === loadingMessage.id
-            ? {
-                ...msg,
-                text: errorMessage,
-              }
-            : msg
-        )
-      );
+      handlePipelineError(error, loadingMessage.id, "analyzing the text");
     }
   };
 
@@ -327,7 +365,6 @@ const ChatPage: React.FC<ChatPageProps> = ({
         inputs: text,
       });
 
-      // Replace the loading message with the summarization result
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === loadingMessage.id
@@ -340,28 +377,100 @@ const ChatPage: React.FC<ChatPageProps> = ({
       );
     } catch (error: unknown) {
       console.error("Error performing summarization:", error);
-
-      let errorMessage =
-        "Sorry, I encountered an error while summarizing the text. Please try again.";
-
-      const errorMessageString = getErrorMessage(error);
-
-      if (isCreditLimitError(errorMessageString)) {
-        errorMessage =
-          "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
-      }
-
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === loadingMessage.id
-            ? {
-                ...msg,
-                text: errorMessage,
-              }
-            : msg
-        )
-      );
+      handlePipelineError(error, loadingMessage.id, "summarizing the text");
     }
+  };
+
+  // Image handling functions
+  const handleImageSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      const errorMessage: Message = {
+        id: messages.length + 1,
+        text: "Please select a valid image file (JPEG, PNG, etc.).",
+        isUser: false,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      return;
+    }
+
+    // Clean up previous preview
+    if (imagePreview) {
+      URL.revokeObjectURL(imagePreview);
+    }
+
+    setSelectedImage(file);
+    setImagePreview(URL.createObjectURL(file));
+  };
+
+  const clearSelectedImage = () => {
+    if (imagePreview) {
+      URL.revokeObjectURL(imagePreview);
+    }
+    setSelectedImage(null);
+    setImagePreview(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const triggerFileInput = () => {
+    fileInputRef.current?.click();
+  };
+
+  // Error handling helper functions
+  const handleError = (message: string) => {
+    const errorMessage: Message = {
+      id: messages.length + 2,
+      text: message,
+      isUser: false,
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => {
+      const filtered = prev.filter((msg) => msg.id !== messages.length + 2);
+      return [...filtered, errorMessage];
+    });
+  };
+
+  const handleStreamingError = (error: unknown, botMessageId: number) => {
+    let errorMessage = "Sorry, I encountered an error while processing your request. Please try again.";
+    const errorMessageString = getErrorMessage(error);
+
+    if (isCreditLimitError(errorMessageString)) {
+      errorMessage = "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
+    }
+
+    const errorMessageObj: Message = {
+      id: botMessageId,
+      text: errorMessage,
+      isUser: false,
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => {
+      const filtered = prev.filter((msg) => msg.id !== botMessageId);
+      return [...filtered, errorMessageObj];
+    });
+  };
+
+  const handlePipelineError = (error: unknown, messageId: number, action: string) => {
+    let errorMessage = `Sorry, I encountered an error while ${action}. Please try again.`;
+    const errorMessageString = getErrorMessage(error);
+
+    if (isCreditLimitError(errorMessageString)) {
+      errorMessage = "You have exceeded your monthly Hugging Face credits. Please upgrade to PRO or wait until your credits reset.";
+    }
+
+    setMessages((prev) =>
+      prev.map((msg) =>
+        msg.id === messageId ? { ...msg, text: errorMessage } : msg
+      )
+    );
   };
 
   // Helper function to extract error message
@@ -401,6 +510,41 @@ const ChatPage: React.FC<ChatPageProps> = ({
             <div className="w-full bg-gray-700 rounded-full h-2.5">
               <div
                 className="bg-linear-to-r from-blue-500 to-purple-600 h-2.5 rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${item.score * 100}%` }}
+              ></div>
+            </div>
+          </div>
+        ))}
+        <div className="text-xs text-gray-500 mt-2">
+          Highest confidence:{" "}
+          <span className="text-green-400 font-medium">
+            {sortedData[0]?.label} ({(sortedData[0]?.score * 100).toFixed(1)}%)
+          </span>
+        </div>
+      </div>
+    );
+  };
+
+  // Component to render image classification results
+  const ImageClassificationChart: React.FC<{ data: ImageClassificationResult[] }> = ({
+    data,
+  }) => {
+    const sortedData = [...data].sort((a, b) => b.score - a.score);
+
+    return (
+      <div className="space-y-3 mt-2">
+        <div className="text-sm font-medium text-gray-300">
+          Image Classification Results:
+        </div>
+        {sortedData.map((item) => (
+          <div key={item.label} className="space-y-1">
+            <div className="flex justify-between text-xs text-gray-400">
+              <span className="capitalize">{item.label}</span>
+              <span>{(item.score * 100).toFixed(1)}%</span>
+            </div>
+            <div className="w-full bg-gray-700 rounded-full h-2.5">
+              <div
+                className="bg-linear-to-r from-green-500 to-teal-600 h-2.5 rounded-full transition-all duration-500 ease-out"
                 style={{ width: `${item.score * 100}%` }}
               ></div>
             </div>
@@ -519,7 +663,18 @@ const ChatPage: React.FC<ChatPageProps> = ({
               }`}
             >
               {message.isUser ? (
-                <p className="text-sm whitespace-pre-wrap">{message.text}</p>
+                <div className="space-y-2">
+                  <p className="text-sm whitespace-pre-wrap">{message.text}</p>
+                  {message.imageUrl && (
+                    <div className="flex justify-center">
+                      <img
+                        src={message.imageUrl}
+                        alt="Uploaded for classification"
+                        className="max-w-full h-auto rounded-lg border border-gray-600 max-h-48 object-contain"
+                      />
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="text-sm prose prose-invert max-w-none">
                   {message.imageUrl ? (
@@ -546,6 +701,11 @@ const ChatPage: React.FC<ChatPageProps> = ({
                     <div className="space-y-2">
                       <p>{message.text}</p>
                       <ClassificationChart data={message.classificationData} />
+                    </div>
+                  ) : message.imageClassificationData ? (
+                    <div className="space-y-2">
+                      <p>{message.text}</p>
+                      <ImageClassificationChart data={message.imageClassificationData} />
                     </div>
                   ) : (
                     <ReactMarkdown components={markdownComponents}>
@@ -586,33 +746,80 @@ const ChatPage: React.FC<ChatPageProps> = ({
 
       {/* Input Area */}
       <div className="bg-gray-800 border-t border-gray-700 p-4">
+        {/* Hidden file input for image selection */}
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={handleImageSelect}
+          accept="image/*"
+          className="hidden"
+        />
+
         <form
           onSubmit={handleSendMessage}
           className="flex space-x-2 max-w-7xl mx-auto"
         >
-          <input
-            type="text"
-            value={inputMessage}
-            onChange={(e) => setInputMessage(e.target.value)}
-            placeholder={
-              selectedPipeline === "text-to-image"
-                ? "Describe the image you want to generate..."
-                : selectedPipeline === "text-classification"
-                ? "Enter text to classify..."
-                : selectedPipeline === "summarization"
-                ? "Enter text to summarize..."
-                : "Ask First Search AI anything..."
-            }
-            className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white placeholder-gray-400"
-            disabled={isLoading || !isVerified || !selectedModel}
-          />
+          {/* Image upload area for image classification */}
+          {selectedPipeline === "image-classification" ? (
+            <div className="flex-1 flex items-center space-x-2">
+              {selectedImage ? (
+                <div className="flex items-center space-x-2 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 flex-1">
+                  <div className="flex items-center space-x-2 flex-1">
+                    <img
+                      src={imagePreview || ""}
+                      alt="Selected"
+                      className="w-8 h-8 object-cover rounded"
+                    />
+                    <span className="text-white text-sm truncate">
+                      {selectedImage.name}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={clearSelectedImage}
+                    className="text-gray-400 hover:text-white transition-colors"
+                  >
+                    <FaTimes className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={triggerFileInput}
+                  className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg hover:bg-gray-600 transition-colors text-white flex items-center justify-center space-x-2"
+                >
+                  <FaPlus className="w-4 h-4" />
+                  <span>Select Image</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            // Regular text input for other pipelines
+            <input
+              type="text"
+              value={inputMessage}
+              onChange={(e) => setInputMessage(e.target.value)}
+              placeholder={
+                selectedPipeline === "text-to-image"
+                  ? "Describe the image you want to generate..."
+                  : selectedPipeline === "text-classification"
+                  ? "Enter text to classify..."
+                  : selectedPipeline === "summarization"
+                  ? "Enter text to summarize..."
+                  : "Ask First Search AI anything..."
+              }
+              className="flex-1 px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white placeholder-gray-400"
+              disabled={isLoading || !isVerified || !selectedModel}
+            />
+          )}
+          
           <div className="relative inline-block group">
             <button
               disabled={
                 !isVerified ||
                 isLoading ||
                 !selectedModel ||
-                inputMessage.trim() === ""
+                (selectedPipeline === "image-classification" ? !selectedImage : inputMessage.trim() === "")
               }
               type="submit"
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-gray-800 transition-colors border border-blue-500 disabled:bg-gray-600 disabled:text-gray-400 disabled:border-gray-500 disabled:cursor-not-allowed"
@@ -627,13 +834,16 @@ const ChatPage: React.FC<ChatPageProps> = ({
             )}
           </div>
         </form>
+        
+        {/* Pipeline-specific instructions */}
         {selectedPipeline &&
           selectedPipeline !== "text-generation" &&
           selectedPipeline !== "text-to-image" &&
           selectedPipeline !== "text-classification" &&
-          selectedPipeline !== "summarization" && (
+          selectedPipeline !== "summarization" &&
+          selectedPipeline !== "image-classification" && (
             <p className="text-yellow-500 text-xs mt-2 text-center">
-              Note: Currently only text generation, text-to-image, text-classification, and summarization models are fully supported
+              Note: Currently only text generation, text-to-image, text-classification, image-classification, and summarization models are fully supported
             </p>
           )}
         {selectedPipeline === "text-to-image" && (
@@ -651,9 +861,15 @@ const ChatPage: React.FC<ChatPageProps> = ({
             Enter text to generate a summary
           </p>
         )}
+        {selectedPipeline === "image-classification" && (
+          <p className="text-blue-400 text-xs mt-2 text-center">
+            Select an image to analyze its content
+          </p>
+        )}
       </div>
-          {/* {Footer} */}
-          <footer className="bg-gray-800 border-t border-gray-700 py-3 px-4">
+
+      {/* Footer */}
+      <footer className="bg-gray-800 border-t border-gray-700 py-3 px-4">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-center sm:justify-between space-y-2 sm:space-y-0">
           <div className="flex items-center space-x-2 text-gray-400 text-sm order-2 sm:order-1">
             <span>Made with ❤️ by Johny Bhiduri</span>
@@ -687,5 +903,3 @@ const ChatPage: React.FC<ChatPageProps> = ({
 };
 
 export default ChatPage;
-
-
