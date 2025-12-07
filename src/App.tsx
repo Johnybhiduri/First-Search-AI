@@ -1,8 +1,6 @@
 import React, { useState } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatPage from './pages/ChatPage';
-import { SpeedInsights } from "@vercel/speed-insights/react"
-import { Analytics } from "@vercel/analytics/react"
 
 const App: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -22,8 +20,6 @@ const App: React.FC = () => {
 
   return (
     <div className="h-screen flex bg-gray-900 text-white">
-      <SpeedInsights/>
-      <Analytics/>
       {/* Sidebar */}
       <div className={`${isSidebarOpen ? 'w-64' : 'w-20'} transition-all duration-300 shrink-0`}>
         <Sidebar 
