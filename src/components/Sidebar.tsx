@@ -380,85 +380,93 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   // Fetch models from Hugging Face API
   const fetchHuggingFaceModels = async (token: string): Promise<boolean> => {
-    setIsLoadingModels(true);
-    try {
-      const response = await fetch(
-        "https://huggingface.co/api/models?inference=warm&limit=2000",
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const models = await response.json();
-
-      // Organize models by pipeline tag
-      const organizedModels: PipelineModels = {};
-
-      models.forEach((model: any) => {
-        if (model.pipeline_tag) {
-          const pipelineTag = model.pipeline_tag;
-          if (!organizedModels[pipelineTag]) {
-            organizedModels[pipelineTag] = [];
-          }
-          organizedModels[pipelineTag].push({
-            id: model.id,
-            name: model.modelId || model.id,
-            pipeline_tag: model.pipeline_tag,
-          });
-        }
-      });
-
-      setPipelineModels(organizedModels);
-
-      // Set default model for the selected task if available
-      if (
-        organizedModels[selectedTask] &&
-        organizedModels[selectedTask].length > 0
-      ) {
-        const defaultModel = organizedModels[selectedTask][0].id;
-        setSelectedModel(defaultModel);
-        onSelectModel(defaultModel);
-      }
-
-      return true;
-    } catch (error) {
-      console.error("Error fetching Hugging Face models:", error);
-      return false;
-    } finally {
-      setIsLoadingModels(false);
-    }
-  };
-
-  // Verify API key by making a simple request
-  const verifyApiKeyWithRequest = async (token: string): Promise<boolean> => {
-    try {
-      // Try to fetch user info or a simple endpoint
-      const response = await fetch("https://huggingface.co/api/whoami-v2", {
+  setIsLoadingModels(true);
+  try {
+    const response = await fetch(
+      "https://huggingface.co/api/models?inference=warm&limit=2000",
+      {
         headers: {
           Authorization: `Bearer ${token}`,
         },
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
       }
+    );
 
-      const userInfo = await response.json();
-      console.log("API Key verified for user:", userInfo);
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const models = await response.json();
+
+    // Organize models by pipeline tag
+    const organizedModels: PipelineModels = {};
+
+    models.forEach((model: any) => {
+      if (model.pipeline_tag) {
+        const pipelineTag = model.pipeline_tag;
+        if (!organizedModels[pipelineTag]) {
+          organizedModels[pipelineTag] = [];
+        }
+        organizedModels[pipelineTag].push({
+          id: model.id,
+          name: model.modelId || model.id,
+          pipeline_tag: model.pipeline_tag,
+        });
+      }
+    });
+
+    setPipelineModels(organizedModels);
+
+    // Set default model for the selected task if available
+    if (
+      organizedModels[selectedTask] &&
+      organizedModels[selectedTask].length > 0 &&
+      !selectedModel // Only set default if no model is already selected
+    ) {
+      const defaultModel = organizedModels[selectedTask][0].id;
+      setSelectedModel(defaultModel);
+      onSelectModel(defaultModel);
+    }
+
+    return true;
+  } catch (error) {
+    console.error("Error fetching Hugging Face models:", error);
+    // Even on error, we should clear existing models to show proper state
+    setPipelineModels({});
+    return false;
+  } finally {
+    setIsLoadingModels(false);
+  }
+};
+
+  // Verify API key by making a simple request
+  const verifyApiKeyWithRequest = async (token: string): Promise<boolean> => {
+  try {
+    // Try to fetch user info or a simple endpoint
+    const response = await fetch("https://huggingface.co/api/whoami-v2", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const userInfo = await response.json();
+    console.log("API Key verified for user:", userInfo);
+    
+    // Only call onVerify if this is a new verification (not from session restore)
+    if (!isApiVerified) {
       onVerify();
       onSetApiKey(token);
-      return true;
-    } catch (error) {
-      console.error("API verification failed:", error);
-      return false;
     }
-  };
+    
+    return true;
+  } catch (error) {
+    console.error("API verification failed:", error);
+    return false;
+  }
+};
 
   // Notify parent when model changes
   useEffect(() => {
@@ -498,35 +506,61 @@ const Sidebar: React.FC<SidebarProps> = ({
     setShowModelDropdown(false);
   };
 
+  // Update the useEffect that restores session storage
+useEffect(() => {
+  const storedKey = sessionStorage.getItem("hf_api_key");
+  const storedVerified = sessionStorage.getItem("hf_api_verified");
+
+  if (storedKey) {
+    setApiKey(storedKey);
+  }
+
+  if (storedVerified === "true") {
+    setIsApiVerified(true);
+    onVerify();
+    onSetApiKey(storedKey || "");
+    // Add this: fetch models when API is already verified
+    if (storedKey) {
+      fetchHuggingFaceModels(storedKey);
+    }
+  }
+}, []);
+
+
+
   const verifyApiKey = async () => {
-    if (!apiKey.trim()) return;
+  if (!apiKey.trim()) return;
 
-    setIsVerifying(true);
+  setIsVerifying(true);
 
-    try {
-      // Verify API key using direct HTTP request
-      const isVerified = await verifyApiKeyWithRequest(apiKey);
+  try {
+    // Verify API key using direct HTTP request
+    const isVerified = await verifyApiKeyWithRequest(apiKey);
 
-      if (isVerified) {
-        // Now fetch the available models
-        const modelsFetched = await fetchHuggingFaceModels(apiKey);
+    if (isVerified) {
+      // Now fetch the available models
+      const modelsFetched = await fetchHuggingFaceModels(apiKey);
 
-        if (modelsFetched) {
-          setIsApiVerified(true);
-        } else {
-          setIsApiVerified(false);
-          console.error("Failed to fetch models");
-        }
+      if (modelsFetched) {
+        setIsApiVerified(true);
+        sessionStorage.setItem("hf_api_key", apiKey);
+        sessionStorage.setItem("hf_api_verified", "true");
       } else {
         setIsApiVerified(false);
+        console.error("Failed to fetch models");
       }
-    } catch (error) {
-      console.error("API verification failed:", error);
+    } else {
       setIsApiVerified(false);
-    } finally {
-      setIsVerifying(false);
+      sessionStorage.removeItem("hf_api_verified");
+      sessionStorage.removeItem("hf_api_key");
     }
-  };
+  } catch (error) {
+    console.error("API verification failed:", error);
+    setIsApiVerified(false);
+  } finally {
+    setIsVerifying(false);
+  }
+};
 
   const handleApiKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setApiKey(e.target.value);

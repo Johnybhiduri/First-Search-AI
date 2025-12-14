@@ -9,6 +9,8 @@ import {
   FaTimes,
   FaVolumeUp,
   FaDownload,
+  FaRegCopy,
+  FaCheck,
 } from "react-icons/fa";
 
 interface Message {
@@ -64,6 +66,13 @@ const ChatPage: React.FC<ChatPageProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+
+  const handleCopy = async (text: string, id: number) => {
+    await navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 1500);
+  };
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -823,7 +832,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
             } w-full`}
           >
             <div
-              className={`max-w-full px-4 py-2 rounded-lg ${
+              className={`relative max-w-full px-4 py-2 pr-10 rounded-lg ${
                 message.isUser
                   ? "bg-blue-800 text-white rounded-br-none border border-blue-800 max-w-2xl"
                   : "bg-gray-800 text-gray-100 rounded-bl-none border border-gray-700 w-full"
@@ -832,6 +841,23 @@ const ChatPage: React.FC<ChatPageProps> = ({
               {message.isUser ? (
                 <div className="space-y-2">
                   <p className="text-sm whitespace-pre-wrap">{message.text}</p>
+
+                  {selectedPipeline !== null &&
+                    ["text-generation", "summarization"].includes(
+                      selectedPipeline
+                    ) && (
+                      <button
+                        onClick={() => handleCopy(message.text, message.id)}
+                        className="absolute bottom-1 right-1 text-blue-200 hover:text-white"
+                      >
+                        {copiedId === message.id ? (
+                          <FaCheck className="w-4 h-4 text-green-400" />
+                        ) : (
+                          <FaRegCopy className="w-4 h-4" />
+                        )}
+                      </button>
+                    )}
+
                   {message.imageUrl && (
                     <div className="flex justify-center">
                       <img
@@ -843,7 +869,7 @@ const ChatPage: React.FC<ChatPageProps> = ({
                   )}
                 </div>
               ) : (
-                <div className="text-sm prose prose-invert max-w-none">
+                <div className="relative text-sm prose prose-invert max-w-none">
                   {message.imageUrl ? (
                     <div className="space-y-2">
                       <p>{message.text}</p>
@@ -885,9 +911,27 @@ const ChatPage: React.FC<ChatPageProps> = ({
                       />
                     </div>
                   ) : (
-                    <ReactMarkdown components={markdownComponents}>
-                      {message.text}
-                    </ReactMarkdown>
+                    <div className="relative">
+                      <ReactMarkdown components={markdownComponents}>
+                        {message.text}
+                      </ReactMarkdown>
+
+                      {selectedPipeline !== null &&
+                        ["text-generation", "summarization"].includes(
+                          selectedPipeline
+                        ) && (
+                          <button
+                            onClick={() => handleCopy(message.text, message.id)}
+                            className="absolute bottom-0 right-0 text-gray-400 hover:text-white z-10 p-1 bg-gray-800 rounded"
+                          >
+                            {copiedId === message.id ? (
+                              <FaCheck className="w-4 h-4 text-green-400" />
+                            ) : (
+                              <FaRegCopy className="w-4 h-4" />
+                            )}
+                          </button>
+                        )}
+                    </div>
                   )}
                 </div>
               )}
@@ -1062,7 +1106,20 @@ const ChatPage: React.FC<ChatPageProps> = ({
       <footer className="bg-gray-800 border-t border-gray-700 py-3 px-4">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-center sm:justify-between space-y-2 sm:space-y-0">
           <div className="flex items-center space-x-2 text-gray-400 text-sm order-2 sm:order-1">
-            <span>Made with ❤️ by Johny Bhiduri</span>
+            <span>
+              Made with ❤️ by{" "}
+              <span className="font-bold">
+                <a
+                  href="https://www.linkedin.com/in/jainendra-bhiduri-245054220/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-gray-400 hover:text-white transition-colors duration-200"
+                  aria-label="LinkedIn Profile"
+                >
+                  J. Bhiduri
+                </a>
+              </span>
+            </span>
           </div>
 
           <div className="flex items-center space-x-4 order-1 sm:order-2">
